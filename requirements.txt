@@ -1,0 +1,14 @@
+transformers
+diffusers
+huggingface-hub
+peft
+bitsandbytes
+numpy
+scikit-learn
+scipy
+lerobot
+wandb
+pyyaml
+python-dotenv
+tqdm
+matplotlib

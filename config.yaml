@@ -1,0 +1,75 @@
+# Weights & Biases (WandB)
+wandb:
+  enabled: true
+  project_name: "ProVLA"
+  run_id: "test_local2"
+  resume: false
+
+# Data Configuration
+data:
+  dataset_name: "lerobot/aloha_mobile_cabinet"
+  data_dir: "./data/aloha_cabinet"
+  total_subset_size: 100
+  val_split: 0.1
+  seed: 42
+
+# Model Configuration
+model:
+  vision_model_id: "google/siglip-so400m-patch14-384"
+  text_model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  action_dim: 14
+  unet_dim: 256
+  cache_dir: "./my_model_weights"
+  
+  # LoRA Configuration
+  lora:
+    r: 16
+    lora_alpha: 32
+    target_modules: ["q_proj", "v_proj"]
+    lora_dropout: 0.05
+    bias: "none"
+  
+  # Diffusion Configuration
+  diffusion:
+    num_train_timesteps: 100
+    beta_schedule: "squaredcos_cap_v2"
+    clip_sample: true
+    prediction_type: "epsilon"
+    inference_steps: 50
+
+# Dataset Processing
+dataset_processing:
+  horizon: 16
+  batch_size: 1
+  num_workers: 0
+  pin_memory: true
+
+# Training Configuration
+training:
+  epochs: 10
+  learning_rate: 2e-4
+  weight_decay: 0
+  gradient_clip_norm: 1.0
+  accum_steps: 10 # Gradient Accumulation
+  warmup_steps: 100 # Learning Rate Scheduler
+  patience_limit: 5 # Early stopping patience
+  validation_frequency: 3  # Validate every N epochs
+
+# Checkpointing & Saving
+checkpointing:
+  checkpoint_dir: "./checkpoints"
+  best_val_checkpoint: "vla_best_val.pth"
+  latest_checkpoint: "vla_latest.pth"
+  save_interval: 1  # Save every N epochs
+
+# Device Configuration
+device:
+  use_cuda: true  # Auto-detect if CUDA available
+  mixed_precision: true
+
+# Validation Configuration
+validation:
+  num_fixed_samples: 4  # Number of fixed samples for visual ghosting
+  fixed_sample_indices: [0, 1, 2, 3]  # [0, 5, 10, 15]
+  save_plots: true
+  plot_save_dir: "./plots"
