@@ -1,5 +1,4 @@
 import os
-import sys
 import argparse
 import torch
 import torch.nn.functional as F
@@ -7,11 +6,12 @@ import torch.optim as optim
 import numpy as np
 from pathlib import Path
 from torch.amp import autocast, GradScaler
-from torch.utils.data import DataLoader, random_split, Subset
-from peft import LoraConfig, get_peft_model
+from torch.utils.data import DataLoader, Subset
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 from dotenv import load_dotenv
+from huggingface_hub import login
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 import wandb
 
@@ -21,11 +21,10 @@ from src.utils import (
     load_config,
     create_directories,
     set_seed,
-    get_device,
+    episodic_split,
     plot_trajectories,
     compute_trajectory_metrics,
     save_checkpoint,
-    load_checkpoint,
 )
 
 def build_model(config: dict, device: str):
@@ -48,7 +47,22 @@ def build_model(config: dict, device: str):
         num_train_timesteps=config["model"]["diffusion"]["num_train_timesteps"],
         inference_steps=config["model"]["diffusion"]["inference_steps"],
         beta_schedule=config["model"]["diffusion"]["beta_schedule"],
-    ).to(device)
+        quantization_config=config["model"]["quantization"],
+    )
+    
+    # Only move to device if not using quantization (quantization uses device_map="auto")
+    if not (config["model"].get("quantization", {}).get("enabled", False)):
+        model = model.to(device)
+    else:
+        # Prepare quantized model for LoRA 
+        model.vision_encoder = prepare_model_for_kbit_training(model.vision_encoder)
+        model.text_encoder = prepare_model_for_kbit_training(model.text_encoder)
+        
+        # Explicitly move the custom PyTorch modules to the GPU 
+        model.fusion = model.fusion.to(device)
+        model.state_encoder = model.state_encoder.to(device)
+        model.final_proj = model.final_proj.to(device)
+        model.unet = model.unet.to(device)
 
     # Apply LoRA to text encoder
     text_peft_config = LoraConfig(
@@ -70,6 +84,15 @@ def build_model(config: dict, device: str):
     )
     model.vision_encoder = get_peft_model(model.vision_encoder, vision_peft_config)
 
+    # Print trainable parameters to verify LoRA is working
+    trainable_params = 0
+    all_param = 0
+    for _, param in model.named_parameters():
+        all_param += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+
+    print(f"Trainable params: {trainable_params} || All params: {all_param} || %: {100 * trainable_params / all_param:.2f}")
     return model
 
 
@@ -172,6 +195,12 @@ def main():
     """Main training loop."""
     load_dotenv()
     
+    # HuggingFace login for gated models
+    hf_token = os.getenv("HF_TOKEN")
+    if hf_token:
+        login(token=hf_token)
+        print("Logged in to HuggingFace Hub")
+    
     parser = argparse.ArgumentParser(description="Train ProVLA model")
     parser.add_argument(
         "--config",
@@ -196,11 +225,15 @@ def main():
     print("Directories created")
 
     # Set seed
-    generator = set_seed(config["data"]["seed"])
+    set_seed(config["data"]["seed"])
     print(f"Seed set to {config['data']['seed']}")
 
     # Device
-    device = get_device(config["device"]["use_cuda"])
+    use_cuda = config["device"]["use_cuda"]
+    if use_cuda and torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
     print(f"Training on: {device}")
 
     # Data Loading
@@ -221,22 +254,16 @@ def main():
     )
     print(f"VLA dataset size: {len(vla_dataset)}")
 
-    # Create train/val split (Need to add proper split based on episode boundaries in future)
-    subset_indices = np.random.choice(
-        len(vla_dataset),
-        config["data"]["total_subset_size"],
-        replace=False,
-    ).tolist()
-    mini_dataset = Subset(vla_dataset, subset_indices)
-
-    val_size = int(config["data"]["total_subset_size"] * config["data"]["val_split"])
-    train_size = config["data"]["total_subset_size"] - val_size
-
-    train_dataset, val_dataset = random_split(
-        mini_dataset,
-        [train_size, val_size],
-        generator=generator,
+    # Episodic train/val split (respects episode boundaries)
+    train_indices, val_indices = episodic_split(
+        raw_dataset,
+        val_split=config["data"]["val_split"],
+        seed=config["data"]["seed"],
+        num_episodes_subset=config["data"].get("num_episodes_subset"),
     )
+
+    train_dataset = Subset(vla_dataset, train_indices)
+    val_dataset = Subset(vla_dataset, val_indices)
 
     train_loader = DataLoader(
         train_dataset,
@@ -293,13 +320,13 @@ def main():
         if os.path.exists(latest_ckpt_path):
             print(f"\nLoading local checkpoint: {latest_ckpt_path}")
             try:
-                checkpoint = load_checkpoint(latest_ckpt_path, device)
+                checkpoint = torch.load(latest_ckpt_path, map_location=device)
                 checkpoint_loaded = True
             except Exception as e:
                 print(f"Could not load local checkpoint: {e}")
         
         # If local not found, try WandB artifact
-        if not checkpoint_loaded and config["wandb"]["enabled"] :
+        if not checkpoint_loaded and config["wandb"]["enabled"]:
             print(f"Local checkpoint not found. Downloading from WandB...")
             try:
                 wandb.login(key=api_key)
@@ -310,7 +337,7 @@ def main():
                 artifact_checkpoint_path = os.path.join(
                     artifact_dir, config["checkpointing"]["latest_checkpoint"]
                 )
-                checkpoint = load_checkpoint(artifact_checkpoint_path, device)
+                checkpoint = torch.load(artifact_checkpoint_path, map_location=device)
                 checkpoint_loaded = True
                 print("Downloaded checkpoint from WandB artifact")
             except Exception as e:

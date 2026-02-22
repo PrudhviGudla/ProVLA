@@ -2,24 +2,34 @@
 wandb:
   enabled: true
   project_name: "ProVLA"
-  run_id: "test_local2"
+  run_id: "test_local5"
   resume: false
 
 # Data Configuration
 data:
   dataset_name: "lerobot/aloha_mobile_cabinet"
   data_dir: "./data/aloha_cabinet"
-  total_subset_size: 100
+  # total_subset_size: 100
   val_split: 0.1
   seed: 42
+  num_episodes_subset: 2 # Total episodes in dataset = 85. Limit to N episodes (null = use all), reduces data size while preserving episode structure
 
 # Model Configuration
 model:
-  vision_model_id: "google/siglip-so400m-patch14-384"
-  text_model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  # vision_model_id: "google/siglip-so400m-patch14-384" 
+  vision_model_id: "google/siglip-base-patch16-224"
+  # text_model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" 
+  # text_model_id: "facebook/MobileLLM-125M"
+  text_model_id: "Qwen/Qwen2.5-0.5B"
   action_dim: 14
   unet_dim: 256
   cache_dir: "./my_model_weights"
+  
+  # Quantization Configuration (optional, requires bitsandbytes)
+  quantization:
+    enabled: false          # Enable to reduce memory usage
+    bits: 8                 # 4 or 8 bit quantization
+    compute_dtype: "float32"  # Computation dtype for stability
   
   # LoRA Configuration
   lora:

@@ -1,8 +1,3 @@
-"""
-Dataset module for ProVLA training.
-Handles data loading, preprocessing, and action chunking.
-"""
-
 import torch
 import random
 from torch.utils.data import Dataset
@@ -49,6 +44,10 @@ class AlohaVLADataset(Dataset):
         self.tokenizer = AutoTokenizer.from_pretrained(
             text_model_id, cache_dir=cache_dir
         )
+        
+        # Ensure pad_token is set (MobileLLM may not have this configured)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Load action statistics for normalization
         stats = self.dataset.meta.stats["action"]

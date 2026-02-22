@@ -1,7 +1,3 @@
-"""
-Utility functions for ProVLA training and visualization.
-"""
-
 import os
 import yaml
 import torch
@@ -67,19 +63,51 @@ def set_seed(seed: int = 42) -> torch.Generator:
     return torch.Generator().manual_seed(seed)
 
 
-def get_device(use_cuda: bool = True) -> str:
+def episodic_split(dataset, val_split: float = 0.1, seed: int = 42, num_episodes_subset: int = None):
     """
-    Get device string (cuda or cpu).
+    Split dataset into train/val by EPISODES (not random samples).
+    Ensures no data leakage between train and val sets.
     
     Args:
-        use_cuda: Whether to use CUDA if available
+        dataset: LeRobotDataset with episode boundaries
+        val_split: Fraction of episodes for validation
+        seed: Random seed for reproducibility
+        num_episodes_subset: Limit to N episodes total (None = use all episodes)
         
     Returns:
-        Device string
+        (train_indices, val_indices) - lists of sample indices per split
     """
-    if use_cuda and torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+    rng = np.random.RandomState(seed)
+    
+    # Get episode boundaries from HuggingFace dataset
+    episode_index_array = np.array(dataset.hf_dataset["episode_index"])
+    unique_episodes = np.unique(episode_index_array).astype(int)
+    unique_episodes = np.sort(unique_episodes)
+    
+    # Optionally limit to subset of episodes
+    if num_episodes_subset is not None and num_episodes_subset < len(unique_episodes):
+        unique_episodes = rng.choice(unique_episodes, num_episodes_subset, replace=False)
+        unique_episodes = np.sort(unique_episodes)
+    
+    num_episodes = len(unique_episodes)
+    num_val_episodes = max(1, int(num_episodes * val_split))
+    
+    # Shuffle and split episodes
+    shuffled_episodes = rng.permutation(unique_episodes)
+    val_episodes = set(shuffled_episodes[:num_val_episodes])
+    train_episodes = set(shuffled_episodes[num_val_episodes:])
+    
+    # Get indices for each split based on episode membership
+    train_mask = np.isin(episode_index_array, list(train_episodes))
+    val_mask = np.isin(episode_index_array, list(val_episodes))
+    
+    train_indices = np.where(train_mask)[0].tolist()
+    val_indices = np.where(val_mask)[0].tolist()
+    
+    print(f"Episodic split: {len(train_episodes)} train episodes, {len(val_episodes)} val episodes")
+    print(f"Train samples: {len(train_indices)}, Val samples: {len(val_indices)}")
+    
+    return train_indices, val_indices
 
 
 def visualize_batch(batch: Dict[str, torch.Tensor], dataset_stats) -> None:
@@ -271,19 +299,3 @@ def save_checkpoint(
     }
     torch.save(checkpoint, checkpoint_path)
 
-
-def load_checkpoint(
-    checkpoint_path: str, device: str
-) -> Dict[str, Any]:
-    """
-    Load training checkpoint.
-    
-    Args:
-        checkpoint_path: Path to checkpoint
-        device: Device to load onto
-        
-    Returns:
-        Checkpoint dictionary
-    """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    return checkpoint

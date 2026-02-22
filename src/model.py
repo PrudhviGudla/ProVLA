@@ -1,18 +1,11 @@
-"""
-ProVLA Model Architecture.
-Combines Vision, Language, and Diffusion for action prediction.
-"""
-
 import os
 import torch
 import torch.nn as nn
-from transformers import SiglipVisionModel, AutoModelForCausalLM
+from transformers import SiglipVisionModel, AutoModelForCausalLM, BitsAndBytesConfig
 from diffusers import UNet1DModel, DDPMScheduler, DDIMScheduler
-
 
 class PerceiverFusion(nn.Module):
     """
-    Perceiver-based fusion module for compressing Vision+Text features.
     Uses learnable latent parameters and cross-attention to compress
     high-dimensional visual and textual features into a compact representation.
     """
@@ -69,11 +62,9 @@ class PerceiverFusion(nn.Module):
 
 class ProVLA(nn.Module):
     """
-    Professional Vision-Language-Action model.
-    
     Architecture:
-    - Vision encoder (SigLIP): processes images
-    - Text encoder (TinyLlama): processes instructions
+    - Vision encoder: processes images
+    - Text encoder: processes instructions
     - Perceiver fusion: combines vision+text features
     - Diffusion head: predicts action trajectories
     
@@ -90,6 +81,7 @@ class ProVLA(nn.Module):
         num_train_timesteps: int = 100,
         inference_steps: int = 50,
         beta_schedule: str = "squaredcos_cap_v2",
+        quantization_config: dict = None,
     ):
         """
         Initialize ProVLA model.
@@ -103,18 +95,57 @@ class ProVLA(nn.Module):
             num_train_timesteps: Number of diffusion timesteps
             inference_steps: Number of DDIM steps for inference
             beta_schedule: Beta schedule for diffusion
+            quantization_config: Optional dict with keys {enabled, bits, compute_dtype}
         """
         super().__init__()
 
         if cache_dir and os.path.exists(cache_dir):
             print(f"Loading Weights from: {cache_dir}")
 
-        # Vision and text encoders (frozen by default, LoRA applied later)
+        # Setup quantization if enabled 
+        bnb_config = None
+        device_map = None
+        
+        if quantization_config and quantization_config.get("enabled", False):
+            try:
+                bits = quantization_config.get("bits", 4)
+                
+                if bits == 4:
+                    bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_use_double_quant=True,
+                    )
+                    device_map = "auto"
+                    print("Loading models with 4-bit quantization")
+                elif bits == 8:
+                    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                    device_map = "auto"
+                    print("Loading models with 8-bit quantization")
+                else:
+                    print(f"Warning: Invalid quantization bits {bits}, supported: 4 or 8")
+            except ImportError:
+                print("Warning: bitsandbytes not installed, training without quantization")
+
+        # Vision and text encoders with optional quantization
         self.vision_encoder = SiglipVisionModel.from_pretrained(
-            vision_model_id, cache_dir=cache_dir
+            vision_model_id,
+            cache_dir=cache_dir,
+            quantization_config=bnb_config,
+            device_map=device_map,
         )
+
+        if hasattr(self.vision_encoder, 'vision_model'):
+            self.vision_encoder.vision_model.use_head = False
+            self.vision_encoder.vision_model.head = nn.Identity()
+
         self.text_encoder = AutoModelForCausalLM.from_pretrained(
-            text_model_id, cache_dir=cache_dir
+            text_model_id,
+            cache_dir=cache_dir,
+            quantization_config=bnb_config,
+            device_map=device_map,
+            trust_remote_code=True,
         )
 
         vision_dim = self.vision_encoder.config.hidden_size

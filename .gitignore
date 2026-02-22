@@ -2,6 +2,7 @@
 .env
 venv/
 __pycache__/
+Notebooks/
 
 
 # Byte-compiled / optimized / DLL files
