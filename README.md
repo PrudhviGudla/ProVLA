@@ -63,7 +63,7 @@ ProVLA/
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/prudhvigudla/ProVLA.git
+git clone https://github.com/PrudhviGudla/ProVLA.git
 cd ProVLA
 
 # 2. Create virtual environment
